@@ -63,17 +63,14 @@ export function StatTile({
 }
 
 /**
- * The index can legitimately exceed the volume's used bytes.
- *
- * `st_blocks` reports a full allocation for every APFS clone even though the
- * blocks are shared, so a volume with cloned files sums to more than it holds —
- * `du` reports the same thing. Saying so is better than printing "104% of used"
- * and looking broken.
+ * The index can still sit a little above used bytes after clone-id
+ * dedup — snapshots and a few unmapped copy-on-write cases. Saying so
+ * is better than printing "104% of used" and looking broken.
  */
 function indexedHint(indexedBytes: number | null, usedBytes: number): string | undefined {
   if (indexedBytes === null || indexedBytes === 0) return "no scan yet";
   if (usedBytes <= 0) return undefined;
-  if (indexedBytes > usedBytes * 1.02) return "clones counted per copy";
+  if (indexedBytes > usedBytes * 1.02) return "above used (snapshots / leftover COW)";
   return `${formatPercent(indexedBytes / usedBytes)} of used`;
 }
 

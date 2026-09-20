@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { test, before, after } from "node:test";
-import { mkdtemp, mkdir, writeFile, link, rm } from "node:fs/promises";
-import { tmpdir } from "node:os";
+import { copyFile, constants, mkdtemp, mkdir, writeFile, link, rm } from "node:fs/promises";
+import { platform, tmpdir } from "node:os";
 import { join } from "node:path";
 import { walk } from "../lib/walk.ts";
 
@@ -154,4 +154,72 @@ test("a missing root is an unreadable count, not a throw", async () => {
   });
   assert.equal(result.unreadable, 1);
   assert.equal(result.totalBytes, 0);
+});
+
+test("injected APFS clones are counted once, plus later private bytes", async () => {
+  const fixture = await mkdtemp(join(tmpdir(), "reclaim-clone-"));
+  try {
+    await writeFile(join(fixture, "origin.bin"), "x");
+    await writeFile(join(fixture, "copy.bin"), "y");
+    const shared = {
+      dev: 1,
+      ino: 1,
+      nlink: 1,
+      size: 1_048_576,
+      blocks: 2048,
+      mtimeMs: 1,
+      cloneId: 99n,
+      cloneRefcnt: 2,
+      privateBytes: 0,
+    };
+    const records = new Map();
+    const result = await walk({
+      root: fixture,
+      onDirectory: (record) => records.set(record.path, record),
+      statFile: async (path) =>
+        path.endsWith("copy.bin")
+          ? { ...shared, ino: 2, privateBytes: 4096 }
+          : { ...shared },
+    });
+    const row = records.get(fixture);
+    // One 1MB allocation + 4KB of COW bytes on the second name, not 2MB.
+    assert.equal(row.treeBytes, 1_048_576 + 4096);
+    assert.equal(row.treeFiles, 2);
+    assert.equal(result.filesSeen, 2);
+  } finally {
+    await rm(fixture, { recursive: true, force: true });
+  }
+});
+
+test("APFS clonefile copies are counted once on Darwin", async (t) => {
+  if (platform() !== "darwin") {
+    t.skip("clonefile is an APFS feature");
+    return;
+  }
+  const fixture = await mkdtemp(join(tmpdir(), "reclaim-clonefile-"));
+  try {
+    const src = join(fixture, "src.bin");
+    const dest = join(fixture, "dest.bin");
+    await writeFile(src, "c".repeat(256 * 1024));
+    try {
+      await copyFile(src, dest, constants.COPYFILE_FICLONE_FORCE);
+    } catch (error) {
+      t.skip(`clonefile unavailable: ${error instanceof Error ? error.message : error}`);
+      return;
+    }
+    const records = new Map();
+    await walk({
+      root: fixture,
+      onDirectory: (record) => records.set(record.path, record),
+    });
+    const row = records.get(fixture);
+    const oneCopy = 256 * 1024;
+    assert.ok(
+      row.treeBytes >= oneCopy && row.treeBytes < oneCopy * 2,
+      `clone pair contributed ${row.treeBytes} bytes; expected one copy`,
+    );
+    assert.ok(row.treeFiles >= 1 && row.treeFiles <= 2);
+  } finally {
+    await rm(fixture, { recursive: true, force: true });
+  }
 });

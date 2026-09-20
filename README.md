@@ -14,15 +14,17 @@ are structural, not cosmetic:
 
 | | Reclaim |
 |---|---|
-| **Coverage** | The whole volume. No entry budget, no truncation. 6.7M entries in ~75s. |
+| **Coverage** | The whole volume. No entry budget, no truncation. Several million entries in a few minutes. |
 | **Persistence** | Directory totals live in SQLite, so navigating is instant instead of re-walking. |
-| **Accuracy** | Allocated blocks, hardlinks counted once, firmlink twins skipped. Byte-exact against `du`. |
+| **Accuracy** | Allocated blocks; hardlinks and APFS clones counted once; firmlink twins skipped. |
 | **Capacity** | Real volume figures including APFS container sharing and local snapshots. |
 | **Action** | Finds reclaimable space and frees it, behind an authorization boundary. |
 
 ## The index
 
-A scan walks every directory and streams post-order totals into SQLite. Only
+A scan walks every directory and streams post-order totals into SQLite (a few
+minutes on a 500 GB volume — clone-id lookup is an extra `getattrlist` per
+file). Only
 directories are stored, plus the largest individual files — storing all 5.8M
 file rows would cost hundreds of megabytes on a machine that is already out of
 room, and buys nothing, because listing one directory live is a sub-millisecond
@@ -38,18 +40,19 @@ then flips a pointer. You never see a half-built tree.
 
 ### On the indexed total
 
-Sizes are allocated blocks, hardlinks counted once, firmlink twins skipped —
-byte-exact against `du` on the trees I checked.
+Sizes are allocated blocks. Hardlinks are counted once by inode. APFS clones
+— different inodes, `nlink === 1`, same data stream — are counted once by
+`getattrlist` clone-id, with later copies contributing only their private
+(COW) bytes. Firmlink twins (`/System/Volumes/Data`) are skipped.
 
-The indexed total can still come out *above* what the volume actually holds.
-`st_blocks` reports a full allocation for every APFS clone even though the
-blocks are shared, so a machine with cloned files sums to more than its
-capacity; `du` reports the same thing, and there is no way to tell a clone from
-an ordinary file through `stat`. On the machine this was built against the gap
-was ~23GB on a 494GB volume, most of it one 36.8GB
-`com.google.Chrome.code_sign_clone`. Reclaim labels the figure
-"clones counted per copy" rather than pretending the number is something it
-isn't. Free space and percent-full come from `statfs` and are always exact.
+`du` still reports a full allocation per clone, so a folder like Chrome's
+`com.google.Chrome.code_sign_clone` can look like hundreds of gigabytes in
+`du` and near-empty in Reclaim. That is the unique cost of deleting it.
+
+Free space and percent-full come from `statfs` and are always exact. If the
+indexed total still sits a little above used, leftover snapshot or sparse-file
+accounting is the usual cause — the UI says so instead of printing "104% of
+used".
 
 ## Pressure
 

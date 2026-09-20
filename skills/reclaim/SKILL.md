@@ -14,8 +14,14 @@ it is safe to delete. Use it instead of `du`, `find`, or `rm`.
 and files. The numbers come from a complete walk of the volume, so they are
 measured, not sampled — quote them directly rather than re-deriving anything.
 
+Directory totals count hardlinks and APFS clones once. A folder such as
+`com.google.Chrome.code_sign_clone` can look huge in `du` (each clone reports
+a full Chrome.app) and small here, because those copies share one data stream.
+If an old index still ranks that folder in the hundreds of GB, rescan; do not
+treat `du` of that path as unique used space.
+
 If the index is stale or missing, `bb reclaim scan --wait` rebuilds it. A full
-scan of a 500GB volume takes about a minute; do not run one inside a loop.
+scan of a 500GB volume takes a few minutes; do not run one inside a loop.
 
 ## Then plan, preview, apply
 

@@ -11,15 +11,19 @@
  *   count; a directory rolls into its parent the moment its own read finished
  *   AND every child completed. Memory stays proportional to the in-flight
  *   frontier, not to the tree, and rows stream out post-order.
- * - **Hardlinks count once.** `/System` and Homebrew are full of them; without
- *   dev:ino dedup a full-volume scan over-reports by several GB (measured: 494.1GB
- *   against a 487.1GB container).
+ * - **Hardlinks and APFS clones count once.** `/System` and Homebrew are full
+ *   of hardlinks; Chrome and Finder copies are APFS clones — different inodes,
+ *   `nlink === 1`, same data stream. Without both, a full-volume scan
+ *   over-reports by hundreds of GB (measured: 242 GB of
+ *   `com.google.Chrome.code_sign_clone` that shared one 1.5 GB Chrome.app).
  * - **Opaque directories.** `node_modules` and `.git` hold most of the
  *   directories on a dev machine and none of the interesting structure. They
  *   are still walked for exact bytes, but stored as one row.
  */
 import { opendir, lstat } from "node:fs/promises";
 import { join } from "node:path";
+import { readCloneInfo } from "./darwin-clone";
+import { countedBytes, shareKey, type WalkFileStat } from "./file-stat";
 
 /**
  * Directories measured exactly but stored as a single row.
@@ -83,11 +87,12 @@ export interface DirRecord {
   depth: number;
   /** Bytes of files directly inside this directory. */
   selfBytes: number;
-  /** Bytes of the whole subtree, hardlinks counted once. */
+  /** Bytes of the whole subtree, hardlinks and APFS clones counted once. */
   treeBytes: number;
   /**
-   * Files counted toward `treeBytes`. A hardlink already seen elsewhere is
-   * excluded from both, so the count and the size always describe the same set.
+   * Files counted toward `treeBytes`. A hardlink or APFS clone already seen
+   * elsewhere is excluded from both unless it holds private (COW) bytes, so
+   * the count and the size always describe the same set.
    */
   treeFiles: number;
   treeDirs: number;
@@ -123,6 +128,8 @@ export interface WalkOptions {
   onProgress?: (progress: WalkProgress) => void;
   /** Called post-order with completed directories. Batch your writes here. */
   onDirectory: (record: DirRecord) => void;
+  /** Test hook. Defaults to `lstat` plus Darwin clone-id lookup. */
+  statFile?: (path: string) => Promise<WalkFileStat>;
 }
 
 export interface WalkResult {
@@ -191,6 +198,23 @@ class TopFiles {
   }
 }
 
+export async function defaultStatFile(path: string): Promise<WalkFileStat> {
+  const stats = await lstat(path);
+  // Hardlinks are already identified by nlink; skip the extra syscall.
+  const clone = stats.nlink > 1 ? null : readCloneInfo(path);
+  return {
+    dev: stats.dev,
+    ino: stats.ino,
+    nlink: stats.nlink,
+    size: stats.size,
+    blocks: stats.blocks,
+    mtimeMs: stats.mtimeMs,
+    cloneId: clone?.cloneId ?? null,
+    cloneRefcnt: clone?.cloneRefcnt ?? null,
+    privateBytes: clone?.privateBytes ?? null,
+  };
+}
+
 export async function walk(options: WalkOptions): Promise<WalkResult> {
   const {
     root,
@@ -201,13 +225,14 @@ export async function walk(options: WalkOptions): Promise<WalkResult> {
     signal,
     onProgress,
     onDirectory,
+    statFile = defaultStatFile,
   } = options;
 
   const startedAt = Date.now();
   const stack: Frame[] = [];
   const top = new TopFiles(topFileLimit);
-  /** dev:ino of every multiply-linked file already counted. */
-  const seenLinks = new Set<string>();
+  /** Shared streams (hardlink inodes and APFS clone ids) already counted. */
+  const seenShares = new Set<string>();
 
   let nextId = 1;
   let active = 0;
@@ -340,16 +365,19 @@ export async function walk(options: WalkOptions): Promise<WalkResult> {
         if (!dirent.isFile()) continue;
         filesSeen += 1;
         try {
-          const stats = await lstat(childPath);
-          if (stats.nlink > 1) {
-            const key = `${stats.dev}:${stats.ino}`;
-            if (seenLinks.has(key)) continue;
-            seenLinks.add(key);
+          const stats = await statFile(childPath);
+          const key = shareKey(stats);
+          let alreadySeen = false;
+          if (key !== null) {
+            alreadySeen = seenShares.has(key);
+            if (!alreadySeen) seenShares.add(key);
           }
-          // Allocated blocks are the real cost on disk; sparse files and APFS
-          // clones report far less than their apparent size. Fall back to
-          // apparent size where blocks are not reported.
-          const bytes = stats.blocks > 0 ? stats.blocks * 512 : stats.size;
+          // Allocated blocks are the real cost on disk; sparse files report
+          // far less than their apparent size. APFS clones still report a
+          // full allocation per copy, so later copies count only private
+          // (COW) bytes — or nothing, if the copy is a pure clone.
+          const bytes = countedBytes(stats, alreadySeen);
+          if (bytes <= 0 && alreadySeen) continue;
           frame.selfBytes += bytes;
           frame.treeBytes += bytes;
           frame.treeFiles += 1;

@@ -60,6 +60,9 @@ Reclaim polls capacity every minute and grades it on two signals: percent full
 and absolute free space. Either can raise the level, because 90% of a 250GB disk
 still leaves 25GB while 4GB free is an emergency at any percentage.
 
+Reclaim's icon in the navigation rail carries the percent-full figure as a small
+badge: muted while healthy, red at **warn**, a filled red pill at **critical**.
+
 At **warn** it can auto-clean. At **critical** it can hand the problem to a BB
 agent with the full report and the tools to act on it. Both are off by default.
 

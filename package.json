@@ -1,6 +1,6 @@
 {
   "name": "bb-plugin-reclaim",
-  "version": "0.1.1",
+  "version": "0.1.2",
   "description": "Full-volume disk usage index, file browser, pressure alerts, and guarded cleanup for build caches, dependencies and Docker.",
   "license": "MIT",
   "author": "Braedon Saunders",
@@ -30,8 +30,8 @@
     "README.md"
   ],
   "engines": {
-    "bb": ">=0.42",
-    "bbPluginSdk": ">=0.4.47"
+    "bb": ">=0.46",
+    "bbPluginSdk": ">=0.6.37"
   },
   "bb": {
     "name": "Reclaim",
@@ -54,7 +54,7 @@
     "zod": "^4.3.6"
   },
   "devDependencies": {
-    "@get-bb/plugin-sdk": "0.4.47",
+    "@get-bb/plugin-sdk": "0.6.37",
     "@pierre/diffs": "^1.2.9",
     "@radix-ui/react-alert-dialog": "^1.1.19",
     "@radix-ui/react-context-menu": "^2.3.3",

@@ -14,6 +14,7 @@ import { CapacityBand, SizeBar, StatTile } from "@/components/meter";
 import { TreeBrowser } from "@/components/tree-browser";
 import { ReclaimPanel } from "@/components/reclaim-panel";
 import { SettingsPanel } from "@/components/settings-panel";
+import { publishRailReading, railIcon } from "@/components/rail-icon";
 import {
   formatAgo,
   formatBytes,
@@ -473,17 +474,25 @@ function PanelHeaderActions() {
   );
 }
 
-/** Sidebar row accessory: the one number worth carrying everywhere. */
-function SidebarPressure() {
+/**
+ * Feeds the navigation-rail badge. Renders nothing; it exists because it is a
+ * slot with plugin context, which the rail icon itself is not.
+ */
+function RailFeed() {
   const rpc = useRpc<typeof rpcContract>();
-  const [percent, setPercent] = useState<number | null>(null);
-  const [tone, setTone] = useState<ReturnType<typeof levelTone>>("neutral");
 
   const load = useCallback(() => {
     rpc.call("capacity").then(
       (capacity) => {
-        setPercent(capacity.primary.usedFraction);
-        setTone(levelTone(capacity.level));
+        publishRailReading({
+          fraction: capacity.primary.usedFraction,
+          tone:
+            capacity.level === "critical"
+              ? "critical"
+              : capacity.level === "warn"
+                ? "warn"
+                : "calm",
+        });
       },
       () => {},
     );
@@ -492,19 +501,14 @@ function SidebarPressure() {
   useEffect(() => {
     load();
     const timer = window.setInterval(load, 120_000);
-    return () => window.clearInterval(timer);
+    return () => {
+      window.clearInterval(timer);
+      publishRailReading(null);
+    };
   }, [load]);
   useRealtime("capacity", load);
 
-  if (percent === null) return null;
-  return (
-    // text-xs matches the Provider Usage sidebar indicator, so the two plugins'
-    // numbers sit at the same weight in the sidebar rather than one looking
-    // like a footnote to the other.
-    <span className={cn("text-xs font-medium tabular-nums", toneText[tone])}>
-      {formatPercent(percent)}
-    </span>
-  );
+  return null;
 }
 
 function HomepageCapacity() {
@@ -551,15 +555,19 @@ function HomepageCapacity() {
   );
 }
 
+/** The panel's rail icon: the Clean glyph with the live disk-used badge. */
+const RAIL_ICON = "reclaim-rail";
+
 export default definePluginApp((app) => {
+  app.experimental_icons.register({ name: RAIL_ICON, component: railIcon("Clean") });
+  app.slots.experimental_appOverlay({ id: "rail-feed", component: RailFeed });
   app.slots.navPanel({
     id: "reclaim",
     title: "Reclaim",
-    icon: "Clean",
+    icon: RAIL_ICON,
     path: "reclaim",
     component: ReclaimPage,
     headerContent: PanelHeaderActions,
-    experimental_sidebarAccessory: SidebarPressure,
   });
   app.slots.homepageSection({
     id: "capacity",
